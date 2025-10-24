@@ -25,7 +25,8 @@ for root, dirs, files in os.walk(SOURCE_DIR):
         var_name = base_name
 
         # 組合 .h 檔內容
-        header_content = f'const char {var_name}[] PROGMEM = R"rawliteral(\n{content}\n)rawliteral";\n'
+        header_content = f'#include <Arduino.h>\n\n'
+        header_content += f'const char {var_name}[] PROGMEM = R"rawliteral(\n{content}\n)rawliteral";\n'
 
         # 寫出 .h 檔
         with open(dst_path, "w", encoding="utf-8") as f:

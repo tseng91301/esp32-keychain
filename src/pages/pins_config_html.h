@@ -1,0 +1,163 @@
+#include <Arduino.h>
+
+const char pins_config_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>ESP32 GPIO + PWM 控制台</title>
+  <style>
+    body { font-family: sans-serif; text-align:center; display: flex; flex-direction: column; align-items: center;}
+    .pin-col { display: flex; flex-direction: column; }
+    .center-component { width: 30vw; display: flex; flex-direction: column; align-items: center; }
+    .pin { margin: 8px; padding: 12px; border: 1px solid #ccc; display: inline-block; border-radius: 10px; width: 180px; }
+    input[type=number]{ width: 70px; }
+    .hardware-btn {
+        width: 150px;
+        border: 2px solid;
+        border-radius: 30px;
+        background-color: #c6c6c6;
+    }
+  </style>
+</head>
+<body>
+  <h2>ESP32-C3 GPIO + PWM Controller</h2>
+  <div id="pins" style="
+    display: flex;
+    flex-direction: row;
+    ">
+    <div class="pin-col" id="pin-col-0">
+        <div class="pin" id="pin-5"></div>
+        <div class="pin" id="pin-6"></div>
+        <div class="pin" id="pin-7"></div>
+        <div class="pin" id="pin-8"></div>
+        <div class="pin" id="pin-9"></div>
+        <div class="pin" id="pin-10"></div>
+        <div class="pin" id="pin-20">
+            <h4>GPIO 20</h4>
+            <p>No function</p>
+        </div>
+        <div class="pin" id="pin-21">
+            <h4>GPIO 21</h4>
+            <p>No function</p>
+        </div>
+    </div>
+    <div class="center-component">
+        <div style="width: 18vw;height: 14vh;padding: 20px;border: 1px solid;border-radius: 20px;"><h4>USB-C</h4></div>
+        <div style="width: 30vw;padding: 20px;display: flex;flex-direction: row;justify-content: space-evenly; margin-top: 100px;">
+            <div class="hardware-btn">
+                <h4>BOOT</h4>
+            </div>
+            <div class="hardware-btn">
+                <h4>RESET</h4>
+            </div>
+        </div>
+    </div>
+    <div class="pin-col" id="pin-col-1">
+        <div class="pin">
+            <h4>5V</h4>
+            <p>Power Output</p>
+        </div>
+        <div class="pin">
+            <h4>GND</h4>
+            <p>Ground</p>
+        </div>
+        <div class="pin">
+            <h4>3V3</h4>
+            <p>Power Output</p>
+        </div>
+        <div class="pin" id="pin-4"></div>
+        <div class="pin" id="pin-3"></div>
+        <div class="pin" id="pin-2"></div>
+        <div class="pin" id="pin-1"></div>
+        <div class="pin" id="pin-0"></div>
+    </div>
+  </div>
+
+  <script>
+    const DEVELOP_MODE = false;
+    const ws = new WebSocket("ws://" + location.host + "/ws");
+
+    function safeSend(msg) {
+      if (DEVELOP_MODE) {
+        console.log(msg);
+        return;
+      }
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(msg);
+      } else {
+        // 等 100ms 再試一次
+        setTimeout(() => safeSend(msg), 100);
+      }
+    }
+
+    function setPin(pin, mode, value, freq=5000) {
+      safeSend(`set,${pin},${mode},${value},${freq}`);
+    }
+
+    function createUI() {
+      for (let i = 0; i <= 10; i++) {
+        let div = document.getElementById(`pin-${i}`);
+        div.innerHTML = `
+          <h4>GPIO${i}</h4>
+          <select id="mode${i}" onchange="updateMode(${i})">
+            <option value="input">Input</option>
+            <option value="output">Output</option>
+            <option value="pwm">PWM</option>
+          </select>
+          <div id="control${i}"></div>
+        `;
+        updateMode(i);
+      }
+    }
+
+    ws.onopen = () => {
+      console.log("✅ WebSocket connected!");
+      createUI();
+    };
+
+    ws.onmessage = (event) => {
+        const msg = event.data;
+        // 格式: "input,<pin>,<value>"
+        const parts = msg.split(",");
+        if (parts[0] === "input") {
+            const pin = parts[1];
+            const val = parts[2];
+            const ctrl = document.getElementById("control"+pin);
+            if (ctrl) {
+            ctrl.innerHTML = `<em>Input value: ${val}</em>`;
+            }
+        }
+    };
+
+    if (DEVELOP_MODE) {
+      createUI();
+    }
+
+    function updateMode(pin) {
+        const mode = document.getElementById("mode"+pin).value;
+        const ctrl = document.getElementById("control"+pin);
+
+        if (mode === "input") {
+            ctrl.innerHTML = "<em>Reading...</em>"; // 初始文字
+            setPin(pin,"input",0);
+        } else if (mode === "output") {
+            ctrl.innerHTML = `
+            <button onclick="setPin(${pin},'output',1)">HIGH</button>
+            <button onclick="setPin(${pin},'output',0)">LOW</button>
+            `;
+            setPin(pin,"output",0);
+        } else if (mode === "pwm") {
+            ctrl.innerHTML = `
+            Duty: <input type="range" min="0" max="255" value="0"
+                oninput="setPin(${pin},'pwm',this.value,document.getElementById('freq${pin}').value)">
+            <br>Freq: <input id="freq${pin}" type="number" min="1" max="40000" value="5000" 
+                onchange="setPin(${pin},'pwm',document.querySelector('#control${pin} input[type=range]').value,this.value)"> Hz
+            `;
+            setPin(pin,"pwm",0,5000);
+        }
+    }
+  </script>
+</body>
+</html>
+)rawliteral";

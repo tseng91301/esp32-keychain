@@ -1,0 +1,298 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <ESPAsyncWebServer.h>
+
+const char *ssid = "ESP32_AP";
+const char *password = "12345678";
+
+AsyncWebServer server(80);
+AsyncWebSocket ws("/ws");
+
+struct PinConfig {
+  String mode = "input"; // input, output, pwm
+  int value = 0;         // duty (0–255) 或 HIGH/LOW
+  int freq = 5000;       // 預設 PWM 頻率
+  int channel = -1;      // 對應 LEDC channel
+};
+
+PinConfig pinConfigs[22];
+
+// 可用 PWM 腳位（ESP32-C3 SuperMini 常見腳位）
+const int pwmPins[] = {0, 1, 2, 3, 4, 5, 8, 9, 10};
+const int pwmCount = sizeof(pwmPins) / sizeof(pwmPins[0]);
+
+bool isPwmCapable(int pin) {
+  for (int i = 0; i < pwmCount; i++) {
+    if (pwmPins[i] == pin) return true;
+  }
+  return false;
+}
+
+// 取得 PWM channel（0~7）
+int getPwmChannel(int pin) {
+  return pin % 8;
+}
+
+void sendInputStates() {
+  for (int pin = 0; pin < 22; pin++) {
+    if (pinConfigs[pin].mode == "input") {
+      int val = digitalRead(pin);
+      // 送給所有 WebSocket client
+      String msg = "input," + String(pin) + "," + String(val);
+      // ws.textAll(msg);
+    }
+  }
+}
+
+unsigned long lastInputUpdate = 0;
+
+// 處理 WebSocket 訊息
+void handleWsMessage(void *arg, uint8_t *data, size_t len) {
+  AwsFrameInfo *info = (AwsFrameInfo *)arg;
+  if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
+    String msg = String((char *)data).substring(0, len);
+    printf("WS Msg: %s\n", msg.c_str());
+
+    // set,<pin>,<mode>,<value>[,<freq>]
+    int pin, value, freq = 5000;
+    char mode[10];
+
+    int params = sscanf(msg.c_str(), "set,%d,%9[^,],%d,%d", &pin, mode, &value, &freq);
+
+    if (params >= 3 && pin >= 0 && pin < 22) {
+      pinConfigs[pin].mode = String(mode);
+      pinConfigs[pin].value = value;
+      if (params == 4) pinConfigs[pin].freq = freq;
+
+      if (pinConfigs[pin].mode == "input") {
+        pinMode(pin, INPUT);
+
+      } else if (pinConfigs[pin].mode == "output") {
+        pinMode(pin, OUTPUT);
+        digitalWrite(pin, value ? HIGH : LOW);
+
+      } else if (pinConfigs[pin].mode == "pwm") {
+        if (!isPwmCapable(pin)) {
+          printf("⚠️ GPIO%d 不支援 PWM\n", pin);
+          return;
+        }
+
+        int channel = getPwmChannel(pin);
+        pinConfigs[pin].channel = channel;
+
+        ledcDetachPin(pin);
+        ledcSetup(channel, pinConfigs[pin].freq, 8); // freq, resolution
+        ledcAttachPin(pin, channel);
+        ledcWrite(channel, pinConfigs[pin].value);
+
+        printf("PWM: pin=%d freq=%d duty=%d ch=%d\n",
+                      pin, pinConfigs[pin].freq, pinConfigs[pin].value, channel);
+      }
+    }
+  }
+}
+
+void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
+               AwsEventType type, void *arg, uint8_t *data, size_t len) {
+  switch (type) {
+    case WS_EVT_CONNECT:
+      Serial.printf("✅ WebSocket connected, id=%u, IP=%s\n",
+                    client->id(), client->remoteIP().toString().c_str());
+      break;
+    case WS_EVT_DISCONNECT:
+      Serial.printf("❌ WebSocket disconnected, id=%u\n", client->id());
+      break;
+    case WS_EVT_DATA:
+      handleWsMessage(arg, data, len);
+      break;
+    default:
+      break;
+  }
+}
+
+// =================== HTML UI ===================
+const char index_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>ESP32 GPIO + PWM 控制台</title>
+  <style>
+    body { font-family: sans-serif; text-align:center; display: flex; flex-direction: column; align-items: center;}
+    .pin-col { display: flex; flex-direction: column; }
+    .center-component { width: 30vw; display: flex; flex-direction: column; align-items: center; }
+    .pin { margin: 8px; padding: 12px; border: 1px solid #ccc; display: inline-block; border-radius: 10px; width: 180px; }
+    input[type=number]{ width: 70px; }
+    .hardware-btn {
+        width: 150px;
+        border: 2px solid;
+        border-radius: 30px;
+        background-color: #c6c6c6;
+    }
+  </style>
+</head>
+<body>
+  <h2>ESP32-C3 GPIO + PWM Controller</h2>
+  <div id="pins" style="
+    display: flex;
+    flex-direction: row;
+    ">
+    <div class="pin-col" id="pin-col-0">
+        <div class="pin" id="pin-5"></div>
+        <div class="pin" id="pin-6"></div>
+        <div class="pin" id="pin-7"></div>
+        <div class="pin" id="pin-8"></div>
+        <div class="pin" id="pin-9"></div>
+        <div class="pin" id="pin-10"></div>
+        <div class="pin" id="pin-20">
+            <h4>GPIO 20</h4>
+            <p>No function</p>
+        </div>
+        <div class="pin" id="pin-21">
+            <h4>GPIO 21</h4>
+            <p>No function</p>
+        </div>
+    </div>
+    <div class="center-component">
+        <div style="width: 18vw;height: 14vh;padding: 20px;border: 1px solid;border-radius: 20px;"><h4>USB-C</h4></div>
+        <div style="width: 30vw;padding: 20px;display: flex;flex-direction: row;justify-content: space-evenly; margin-top: 100px;">
+            <div class="hardware-btn">
+                <h4>BOOT</h4>
+            </div>
+            <div class="hardware-btn">
+                <h4>RESET</h4>
+            </div>
+        </div>
+    </div>
+    <div class="pin-col" id="pin-col-1">
+        <div class="pin">
+            <h4>5V</h4>
+            <p>Power Output</p>
+        </div>
+        <div class="pin">
+            <h4>GND</h4>
+            <p>Ground</p>
+        </div>
+        <div class="pin">
+            <h4>3V3</h4>
+            <p>Power Output</p>
+        </div>
+        <div class="pin" id="pin-4"></div>
+        <div class="pin" id="pin-3"></div>
+        <div class="pin" id="pin-2"></div>
+        <div class="pin" id="pin-1"></div>
+        <div class="pin" id="pin-0"></div>
+    </div>
+  </div>
+
+  <script>
+    const DEVELOP_MODE = false;
+    const ws = new WebSocket("ws://" + location.host + "/ws");
+
+    function safeSend(msg) {
+      if (DEVELOP_MODE) {
+        console.log(msg);
+        return;
+      }
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(msg);
+      } else {
+        // 等 100ms 再試一次
+        setTimeout(() => safeSend(msg), 100);
+      }
+    }
+
+    function setPin(pin, mode, value, freq=5000) {
+      safeSend(`set,${pin},${mode},${value},${freq}`);
+    }
+
+    function createUI() {
+      for (let i = 0; i <= 10; i++) {
+        let div = document.getElementById(`pin-${i}`);
+        div.innerHTML = `
+          <h4>GPIO${i}</h4>
+          <select id="mode${i}" onchange="updateMode(${i})">
+            <option value="input">Input</option>
+            <option value="output">Output</option>
+            <option value="pwm">PWM</option>
+          </select>
+          <div id="control${i}"></div>
+        `;
+        updateMode(i);
+      }
+    }
+
+    ws.onopen = () => {
+      console.log("✅ WebSocket connected!");
+      createUI();
+    };
+
+    ws.onmessage = (event) => {
+        const msg = event.data;
+        // 格式: "input,<pin>,<value>"
+        const parts = msg.split(",");
+        if (parts[0] === "input") {
+            const pin = parts[1];
+            const val = parts[2];
+            const ctrl = document.getElementById("control"+pin);
+            if (ctrl) {
+            ctrl.innerHTML = `<em>Input value: ${val}</em>`;
+            }
+        }
+    };
+
+    if (DEVELOP_MODE) {
+      createUI();
+    }
+
+    function updateMode(pin) {
+        const mode = document.getElementById("mode"+pin).value;
+        const ctrl = document.getElementById("control"+pin);
+
+        if (mode === "input") {
+            ctrl.innerHTML = "<em>Reading...</em>"; // 初始文字
+            setPin(pin,"input",0);
+        } else if (mode === "output") {
+            ctrl.innerHTML = `
+            <button onclick="setPin(${pin},'output',1)">HIGH</button>
+            <button onclick="setPin(${pin},'output',0)">LOW</button>
+            `;
+            setPin(pin,"output",0);
+        } else if (mode === "pwm") {
+            ctrl.innerHTML = `
+            Duty: <input type="range" min="0" max="255" value="0"
+                oninput="setPin(${pin},'pwm',this.value,document.getElementById('freq${pin}').value)">
+            <br>Freq: <input id="freq${pin}" type="number" min="1" max="40000" value="5000" 
+                onchange="setPin(${pin},'pwm',document.querySelector('#control${pin} input[type=range]').value,this.value)"> Hz
+            `;
+            setPin(pin,"pwm",0,5000);
+        }
+    }
+  </script>
+</body>
+</html>
+)rawliteral";
+
+// =================== SETUP ===================
+void setup() {
+  WiFi.softAP(ssid, password);
+  IPAddress ip = WiFi.softAPIP();
+  printf("Access Point: %s\nPassword: %s\nIP Address: %s\n",
+                ssid, password, ip.toString().c_str());
+
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send_P(200, "text/html", index_html);
+  });
+
+  ws.onEvent(onWsEvent);
+  server.addHandler(&ws);
+  server.begin();
+}
+
+void loop() {
+  unsigned long now = millis();
+  if (now - lastInputUpdate > 100) { // 每 100ms 更新一次
+    sendInputStates();
+    lastInputUpdate = now;
+  }
+}
