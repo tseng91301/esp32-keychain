@@ -16,7 +16,7 @@
 Adafruit_ST7735 *tft;
 Display *d;
 
-DisplayText *text;
+DisplayList *list;
 
 uint16_t color565(uint8_t r, uint8_t g, uint8_t b) {
   return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
@@ -49,30 +49,25 @@ void setup() {
   SPI.begin(TFT_SCLK, -1, TFT_MOSI, TFT_CS);
 
   tft = new Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
+  tft->setTextWrap(false);
   d = new Display(tft, 160, 180);
   d->init(2);
-  text = new DisplayText("Hello world", 2, ST7735_RED, d);
-  text->display(10, 10);
-  delay(5000);
+  list = new DisplayList(d);
+  list->init(0, 0, 180, 160);
+  list->append(new DisplayText("Hello world", 2, ST7735_RED, d));
+  list->append(new DisplayText("0", 3, ST7735_YELLOW, d));
+  list->append(new DisplayText("0", 2, ST7735_CYAN, d));
+
+  delay(500);
 }
 
 void loop() {
-  for(int hue = 0; hue <256; hue++) {
-    uint8_t r,g,b;
-    HSVtoRGB(hue, 1.0, 1.0, r, g, b);
-    uint16_t color = color565(r,g,b);
-
-    text->color = color;
-    text->display(10, 10);
-    delay(20);
-  }
-  for(int hue = 255; hue >=0; hue--) {
-    uint8_t r,g,b;
-    HSVtoRGB(hue, 1.0, 1.0, r, g, b);
-    uint16_t color = color565(r,g,b);
-
-    text->color = color;
-    text->display(10, 10);
-    delay(20);
-  }
+  static int now = 0;
+  static int now2 = 0;
+  DisplayText *t = (DisplayText*)list->get(1);
+  t->setText(String(now++));
+  DisplayText *t2 = (DisplayText*)list->get(2);
+  t2->setText(String(now2+=2));
+  list->display();
+  delay(50);
 }
