@@ -3,6 +3,11 @@
 #include <Adafruit_ST7735.h>
 #include <SPI.h>
 
+#include <Wire.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+#include <MadgwickAHRS.h>
+
 #include <display/display.h>
 
 // === SPI 腳位設定 (ESP32-C3 SuperMini) ===
@@ -17,6 +22,11 @@ Adafruit_ST7735 *tft;
 Display *d;
 
 DisplayList *list;
+
+Adafruit_MPU6050 *mpu;
+Madgwick *filter;
+unsigned long update_interval = 50000; // us
+unsigned long lastMicros = 0;
 
 uint16_t color565(uint8_t r, uint8_t g, uint8_t b) {
   return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
@@ -45,29 +55,69 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  Serial.println("Initializing TFT...");
+  printf("Initializing TFT...\n");
   SPI.begin(TFT_SCLK, -1, TFT_MOSI, TFT_CS);
 
   tft = new Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
   tft->setTextWrap(false);
   d = new Display(tft, 160, 180);
   d->init(2);
+
   list = new DisplayList(d);
   list->init(0, 0, 180, 160);
-  list->append(new DisplayText("Hello world", 2, ST7735_RED, d));
-  list->append(new DisplayText("0", 3, ST7735_YELLOW, d));
-  list->append(new DisplayText("0", 2, ST7735_CYAN, d));
+  list->append(new DisplayText("MPU6050", 2, ST7735_YELLOW, d));
+
+  mpu = new Adafruit_MPU6050();
+  if (!mpu->begin()) {
+    list->append(new DisplayText("MPU6050 initialization Failed...", 1, ST7735_RED, d));
+    list->append(new DisplayText("Check connection and restart.", 1, ST7735_YELLOW, d));
+    list->display();
+    while (1) {
+      delay(10);
+    }
+  }
+  filter = new Madgwick();
+  filter->begin(100);
+  lastMicros = micros();
+
+  //setupt motion detection
+  mpu->setHighPassFilter(MPU6050_HIGHPASS_0_63_HZ);
+  mpu->setMotionDetectionThreshold(1);
+  mpu->setMotionDetectionDuration(1);
+  
+  list->append(new DisplayText("Orientation:", 2, ST7735_GREEN, d));
+  list->append(new DisplayText("0.0, 0.0, 0.0", 1, ST7735_GREEN, d));
+  list->display();
 
   delay(500);
 }
 
 void loop() {
-  static int now = 0;
-  static int now2 = 0;
-  DisplayText *t = (DisplayText*)list->get(1);
-  t->setText(String(now++));
-  DisplayText *t2 = (DisplayText*)list->get(2);
-  t2->setText(String(now2+=2));
+  float roll, pitch, heading;
+  /* Get new sensor events with the readings */
+  sensors_event_t a, g, temp;
+  mpu->getEvent(&a, &g, &temp);
+
+  // NOTE: Madgwick impl 要求 gyro in rad/s; your Adafruit g.gyro is in rad/s already? 
+  // (Adafruit_Sensor's gyro often gives rad/s) — 若是 deg/s 要換算。
+  // 下面假設 g.gyro.* 已經是 rad/s (如果是 deg/s，乘 PI/180)
+  filter->updateIMU(g.gyro.x, g.gyro.y, g.gyro.z, a.acceleration.x, a.acceleration.y, a.acceleration.z);
+
+  unsigned long now = micros();
+  if ((now - lastMicros) < update_interval) return;
+  lastMicros = now;
+
+  // print the heading, pitch and roll
+  roll = filter->getRoll();
+  pitch = filter->getPitch();
+  heading = filter->getYaw();
+
+  printf("Orientation: ");
+  printf("%.3f, ", heading);
+  printf("%.3f, ", pitch);
+  printf("%.3f\n", roll);
+
+  DisplayText *t1 = (DisplayText*)list->get(2);
+  t1->setText(String(heading) + ", " + String(pitch) + ", " + String(roll));
   list->display();
-  delay(50);
 }
